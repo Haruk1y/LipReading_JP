@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F  # この行を追加
 from torch.utils.data import DataLoader
 import Levenshtein
 import numpy as np
@@ -22,13 +23,22 @@ class LipReadingTrainer:
         self.model = model.to(device)
         self.device = device
 
-        self.criterion = LabelSmoothingLoss(num_phonemes, smoothing=0.1)
+        # Replace standard loss with DiversityLoss
+        self.criterion = DiversityLoss(
+            num_classes=num_phonemes,
+            smoothing=0.2,  # Increased smoothing
+            diversity_weight=0.1,  # Weight for diversity loss
+            temperature=1.5  # Temperature scaling factor
+        )
+
+        # Modified optimizer with gradient clipping
         self.optimizer = optim.AdamW(
             model.parameters(),
             lr=learning_rate,
             weight_decay=0.01,
             betas=(0.9, 0.98)
         )
+
         self.scheduler = optim.lr_scheduler.OneCycleLR(
             self.optimizer,
             max_lr=learning_rate,
@@ -36,10 +46,11 @@ class LipReadingTrainer:
             steps_per_epoch=1000,
             pct_start=0.1
         )
+
+        # クラスのバランスを監視するためのカウンター
+        self.class_counts = torch.zeros(num_phonemes)
         self.num_phonemes = num_phonemes
         self.label_processor = label_processor
-
-        # ラベル変換用の辞書を保存
         self.idx2phoneme = label_processor.idx2phoneme
         self.phoneme2idx = label_processor.phoneme2idx
         
@@ -48,61 +59,80 @@ class LipReadingTrainer:
         self.model.train()
         total_loss = 0
         num_batches = 0
+
+        # Reset class counts for this epoch
+        self.class_counts.zero_()
         
         for batch_idx, batch in enumerate(tqdm(train_loader)):
             try:
                 frames = batch['frames'].to(self.device)
                 frame_labels = batch['frame_labels'].to(self.device)
                 phoneme_sequence = batch['phoneme_sequence'].to(self.device)
-                frames_lengths = batch['frames_lengths'].to(self.device)
-                phonemes_lengths = batch['phonemes_lengths'].to(self.device)
-
+                
                 # Create target mask for decoder
                 tgt_mask = self.model.generate_square_subsequent_mask(
                     phoneme_sequence.size(1)
                 ).to(self.device)
                 
                 self.optimizer.zero_grad()
-
+                
                 # Forward pass
                 logits = self.model(
                     frames,
-                    phoneme_sequence[:, :-1],  # 入力系列は最後の要素を除く
+                    phoneme_sequence[:, :-1],
                     tgt_mask
                 )
-
-                # Compute loss only on valid positions
+                
+                # Update class counts
+                with torch.no_grad():
+                    predictions = logits.argmax(dim=-1)
+                    for pred in predictions.view(-1):
+                        if pred != -1:  # Exclude padding
+                            self.class_counts[pred] += 1
+                
+                # Compute loss
                 loss = self.criterion(
                     logits.view(-1, self.num_phonemes),
-                    phoneme_sequence[:, 1:].contiguous().view(-1)  # ターゲットは最初の要素を除く
+                    phoneme_sequence[:, 1:].contiguous().view(-1)
                 )
-
+                
                 # Backward pass
                 loss.backward()
                 
                 # Gradient clipping
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
-
+                
                 self.optimizer.step()
                 self.scheduler.step()
                 
                 total_loss += loss.item()
                 num_batches += 1
                 
-                # バッチごとの損失を出力
-                if batch_idx % 10 == 0:
-                    print(f"\nBatch {batch_idx}, Loss: {loss.item():.4f}")
-                    print(f"Frames shape: {frames.shape}")
-                    print(f"Phoneme sequence shape: {phoneme_sequence.shape}")
+                # Print class distribution periodically
+                if batch_idx % 100 == 0:
+                    self._print_class_distribution()
                 
             except Exception as e:
                 print(f"Error in batch {batch_idx}: {str(e)}")
-                print(f"Frames shape: {frames.shape if 'frames' in locals() else 'N/A'}")
-                print(f"Phoneme sequence shape: {phoneme_sequence.shape if 'phoneme_sequence' in locals() else 'N/A'}")
                 continue
         
         return total_loss / num_batches if num_batches > 0 else float('inf')
     
+    def _print_class_distribution(self):
+        """クラスの分布を出力"""
+        if torch.sum(self.class_counts) == 0:
+            return
+            
+        # 正規化された分布を計算
+        distribution = self.class_counts / torch.sum(self.class_counts)
+        
+        # Top-5の音素とその出現確率を表示
+        values, indices = torch.topk(distribution, 5)
+        print("\nTop-5 predicted phonemes:")
+        for idx, val in zip(indices, values):
+            phoneme = self.idx2phoneme[idx.item()]
+            print(f"{phoneme}: {val.item()*100:.2f}%")
+
     @torch.no_grad()
     def evaluate(self, val_loader, logger):
         """評価を行う"""
@@ -258,20 +288,33 @@ class LipReadingTrainer:
         
         return cer
 
-class LabelSmoothingLoss(nn.Module):
-    def __init__(self, num_classes, smoothing=0.1):
+class DiversityLoss(nn.Module):
+    def __init__(self, num_classes, smoothing=0.1, diversity_weight=0.1, temperature=1.0):
         super().__init__()
         self.smoothing = smoothing
         self.num_classes = num_classes
         self.confidence = 1.0 - smoothing
+        self.diversity_weight = diversity_weight
+        self.temperature = temperature
         
     def forward(self, pred, target):
-        pred = pred.log_softmax(dim=-1)
+        # Apply temperature scaling
+        scaled_pred = pred / self.temperature
+        
+        # Standard cross-entropy with label smoothing
+        log_probs = F.log_softmax(scaled_pred, dim=-1)
         with torch.no_grad():
             true_dist = torch.zeros_like(pred)
             true_dist.fill_(self.smoothing / (self.num_classes - 1))
             true_dist.scatter_(1, target.unsqueeze(1), self.confidence)
-        return torch.mean(torch.sum(-true_dist * pred, dim=-1))
+        ce_loss = torch.mean(torch.sum(-true_dist * log_probs, dim=-1))
+        
+        # Diversity loss: penalize when predictions are too concentrated
+        probs = F.softmax(scaled_pred, dim=-1)
+        avg_probs = torch.mean(probs, dim=0)  # Average probability distribution across batch
+        diversity_loss = -torch.sum(avg_probs * torch.log(avg_probs + 1e-10))  # Entropy of average distribution
+        
+        return ce_loss - self.diversity_weight * diversity_loss
 
 
 def train_model(model, train_dataset, val_dataset, num_epochs=30, batch_size=4, device='cuda'):
@@ -336,7 +379,7 @@ def train_model(model, train_dataset, val_dataset, num_epochs=30, batch_size=4, 
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': trainer.optimizer.state_dict(),
                     'cer': cer,
-                }, f'logs/train2/model_epoch_{epoch+1}_cer_{cer:.2f}.pth')
+                }, f'logs/train3/model_epoch_{epoch+1}_cer_{cer:.2f}.pth')
                 
                 logger.log_message(f"New best model saved! CER improved by {improvement:.2f}%")
             else:
