@@ -212,8 +212,15 @@ class LipReadingTrainer:
             pred_phonemes = [self.idx2phoneme[idx] for idx in pred]
             target_phonemes = [self.idx2phoneme[idx] for idx in target]
 
+            # 音素を単一の文字として結合
+            # 各音素を一意の単一文字に置き換えて、レーベンシュタイン距離を計算
+            unique_chars = {phoneme: chr(0xE000 + i) for i, phoneme in enumerate(set(pred_phonemes + target_phonemes))}
+            
+            pred_str = ''.join(unique_chars[p] for p in pred_phonemes)
+            target_str = ''.join(unique_chars[p] for p in target_phonemes)
+            
             # Levenshtein距離の計算
-            distance = Levenshtein.distance(' '.join(pred_phonemes), ' '.join(target_phonemes))
+            distance = Levenshtein.distance(pred_str, target_str)
             
             # CERの計算（編集距離を文字数で割る）
             total_chars += len(target_phonemes)
@@ -329,7 +336,7 @@ def train_model(model, train_dataset, val_dataset, num_epochs=30, batch_size=4, 
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': trainer.optimizer.state_dict(),
                     'cer': cer,
-                }, f'logs/model_epoch_{epoch+1}_cer_{cer:.2f}.pth')
+                }, f'logs/train2/model_epoch_{epoch+1}_cer_{cer:.2f}.pth')
                 
                 logger.log_message(f"New best model saved! CER improved by {improvement:.2f}%")
             else:

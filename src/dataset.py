@@ -51,18 +51,25 @@ def extract_lip_roi(frame, landmarks, target_size=(96, 96)):
     Returns:
         lip_roi: numpy array of shape (target_size[0], target_size[1], C)
     """
-    # デバッグ用に最初のフレームのランドマークの範囲を確認  
-    if not hasattr(extract_lip_roi, 'debug_printed'):
-        points_y = landmarks[:, 1]  # Y座標
-        sorted_indices = np.argsort(points_y)
-        lip_region_start = int(len(sorted_indices) * 0.6)  # 下半分付近から探索
-        potential_lip_points = sorted_indices[lip_region_start:]
-        print("Potential lip landmark indices:", potential_lip_points.tolist())
-        extract_lip_roi.debug_printed = True
 
     # ROHANデータセット用の口周辺のランドマークインデックス
-    # 注意: 以下のインデックスは仮の値です。実際のデータセットに合わせて修正が必要です
-    LIPS_INDICES = list(range(71, 79)) + list(range(58, 70))  # この値は要確認
+    LIPS_INDICES = [
+        # 上唇の外側の輪郭
+        164, 165, 167, 391, 393, 435,  # 上唇の上端
+        37, 39, 40, 41, 42, 43,        # 上唇と下唇の境界（上側）
+        
+        # 下唇の外側の輪郭
+        98, 99, 326, 327, 328,         # 下唇の下端
+        76, 77, 78, 80, 81, 82,        # 上唇と下唇の境界（下側）
+        
+        # 口角
+        57, 58, 61, 62,                # 左口角
+        291, 292, 306, 308,            # 右口角
+        
+        # 内側の輪郭（より正確な口の形状を捉えるため）
+        76, 77, 90, 180, 85,           # 下唇内側
+        314, 315, 317, 318, 324,       # 上唇内側
+    ]
     
     # Get lip landmarks
     lip_points = landmarks[LIPS_INDICES]
