@@ -213,18 +213,18 @@ class TransformerDecoder(nn.Module):
 
 class LipReadingModel(nn.Module):
     """Complete Lip Reading Model"""
-    def __init__(self, vocab_size, hidden_dim=256):
+    def __init__(self, vocab_size, hidden_dim=512):
         super().__init__()
         self.image_encoder = ImageEncoder(hidden_dim=hidden_dim)
         
         # Add dropout for regularization
-        self.dropout = nn.Dropout(0.5)
+        self.dropout = nn.Dropout(0.3)
         
         # Improved Conformer
         self.conformer = ConformerEncoder(
             dim=hidden_dim,
-            num_layers=3,
-            ff_expansion_factor=2,
+            num_layers=6,
+            ff_expansion_factor=4,
             conv_expansion_factor=2
         )
         
@@ -232,9 +232,9 @@ class LipReadingModel(nn.Module):
         self.decoder = TransformerDecoder(
             vocab_size,
             d_model=hidden_dim,
-            nhead=4,
-            num_layers=3,
-            dropout=0.3
+            nhead=8,
+            num_layers=6,
+            dropout=0.2
         )
         
         # Initialize weights

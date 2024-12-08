@@ -11,10 +11,10 @@ def main():
         'data_root': 'data',
         'batch_size': 1,
         'num_epochs': 30,
-        'learning_rate': 0.00005,
+        'learning_rate': 0.0001,
         'seed': 42,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-        'accumulation_steps': 4  # Gradient accumulation steps
+        'accumulation_steps': 8  # Gradient accumulation steps
     }
 
     # シード設定

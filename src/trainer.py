@@ -11,7 +11,7 @@ from src.utils import TrainingLogger
 import os
 
 class LipReadingTrainer:
-    def __init__(self, model, device, num_phonemes, label_processor, learning_rate=0.00005):
+    def __init__(self, model, device, num_phonemes, label_processor, batch_size, learning_rate=0.00005):
         """
         Args:
             model: 学習するモデル
@@ -26,25 +26,28 @@ class LipReadingTrainer:
         # Replace standard loss with DiversityLoss
         self.criterion = DiversityLoss(
             num_classes=num_phonemes,
-            smoothing=0.2,  # Increased smoothing
-            diversity_weight=0.1,  # Weight for diversity loss
-            temperature=1.5  # Temperature scaling factor
+            smoothing=0.1,  # Increased smoothing
+            diversity_weight=0.2,  # Weight for diversity loss
+            temperature=1.2  # Temperature scaling factor
         )
 
         # Modified optimizer with gradient clipping
         self.optimizer = optim.AdamW(
             model.parameters(),
             lr=learning_rate,
-            weight_decay=0.01,
+            weight_decay=0.02,
             betas=(0.9, 0.98)
         )
+
+        # データセットのサイズとバッチサイズから実際のステップ数を計算
+        steps_per_epoch = 3680 // batch_size  # トレーニングデータのサイズをバッチサイズで割る
 
         self.scheduler = optim.lr_scheduler.OneCycleLR(
             self.optimizer,
             max_lr=learning_rate,
             epochs=30,
-            steps_per_epoch=1000,
-            pct_start=0.1
+            steps_per_epoch=steps_per_epoch,
+            pct_start=0.2
         )
 
         # クラスのバランスを監視するためのカウンター
@@ -348,6 +351,7 @@ def train_model(model, train_dataset, val_dataset, num_epochs=30, batch_size=4, 
         device=device,
         num_phonemes=len(train_dataset.label_processor.all_phonemes),
         label_processor=train_dataset.label_processor,
+        batch_size=batch_size,  # batch_sizeを渡す
         learning_rate=0.00005  # 学習率を小さめに設定
     )
     
@@ -379,7 +383,7 @@ def train_model(model, train_dataset, val_dataset, num_epochs=30, batch_size=4, 
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': trainer.optimizer.state_dict(),
                     'cer': cer,
-                }, f'logs/train3/model_epoch_{epoch+1}_cer_{cer:.2f}.pth')
+                }, f'logs/train5/model_epoch_{epoch+1}_cer_{cer:.2f}.pth')
                 
                 logger.log_message(f"New best model saved! CER improved by {improvement:.2f}%")
             else:
